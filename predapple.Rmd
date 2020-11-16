@@ -1,0 +1,189 @@
+---
+title: "Predicción ventas Apple"
+author: "Daniel Corral Ruiz"
+date: "16-11-2020"
+output:
+  html_document:
+    toc: yes
+    toc_depth: '5'
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
+---
+
+```{r echo=FALSE,warning= FALSE, message=FALSE}
+library(here) # Comentar
+library(tidyverse)
+library(janitor) # Clean names
+library(graphics) # Beautiful Summarize
+library(magrittr) # Pipe operators
+library(corrplot) # Correlations
+library(ggcorrplot)  # Correlations
+library(PerformanceAnalytics) # Correlations
+library(leaps) # Model selection
+library(ggfortify)
+library(gplots)
+library(MASS)
+library(dplyr)
+library(readr)
+library(gvlma)
+library(MASS)
+library(car)
+library(glmnet)
+library(boot)
+library(leaps)
+library(rsample)
+library(factoextra)
+library(FactoMineR)
+library(gam)
+library(forecast)
+library(xts)
+library(ggplot2)
+library(corrplot)
+```
+
+## Introducción
+El objetivo es predecir las ventas de Apple. Para ello, hemos acudido a Bloomberg y hemos obtenido los datos trimestrales desde el 2T de 2008 hasta el 3T del 2017. En primer lugar vamos a proceder importar los datos.
+
+```{r warning= FALSE, message=FALSE}
+Apple <- read.csv("IngresosApple.csv", sep=";", dec=",")
+View(Apple)
+```
+
+## Modificamos el dataset
+A través de los resultados obtenidos en la tabla, podemos añadir un breve análisis exploratorio de datos. 
+Tenemos que cambiar el formato del periodo, para ello creamos un nuevo valor con los datos de los trimestres formateados a fecha. Una vez que hemos creado las fechas correctas, añadimos una nueva variable con estos datos, mediante mutate del paquete "dplyr".
+
+```{r warning= FALSE, message=FALSE}
+Apple[is.na(Apple)] <- 0
+fechas <- seq(as.Date("2008-04-01"), as.Date("2017-09-30"), by = "quarter")
+Apple <- mutate(Apple, Date = fechas)
+xVentas=xts(Apple$Ingresos, order.by = as.Date(Apple$Date),frequency=4)
+xVentas = to.quarterly(xVentas)
+zVentas = as.zoo(xVentas$xVentas.Close)
+View(zVentas)
+```
+
+## Representación gráfica
+Podemos observar gráficamente las ventas de Apple en trimestres, para una mejor interpretación de nuestros datos.
+
+```{r warning= FALSE, message=FALSE}
+autoplot(zVentas)+ylab("Ventas")+ggtitle("Ventas Trimestrales CocaCola")+xlab("Trimestres")
+
+```
+
+Podemos observar una tendencia creciente y una estacionaridad en sus ventas.
+A su vez, podemos dividir el gráfico por trimestres.
+
+```{r warning= FALSE, message=FALSE}
+tsVentas=ts(coredata(zVentas), start = c(2008, 2), frequency = 4)
+#Seasonal Plot
+ggfreqplot(tsVentas,freq=4,nrow=1,facet.labeller=c("1T","2T","3T","4T"))+ggtitle("Primas Trimestrales")
+```
+
+
+Podemos hacer una gráfica con los componentes que tienen: Observamos su estacionaridad.
+
+```{r warning= FALSE, message=FALSE}
+plot(stl(tsVentas[, 1], s.window = "periodic"))
+```
+
+## Modelo ETS
+Suavizamiento exponencial (ETS) es un algoritmo estadístico local de uso común para la predicción de series temporales.
+El algoritmo ETS es especialmente útil para conjuntos de datos con estacionalidad y otras suposiciones previas sobre los datos. ETS calcula un promedio ponderado sobre todas las observaciones en el conjunto de datos de las series temporales de entrada como su predicción. Las ponderaciones disminuyen exponencialmente con el tiempo, en lugar de las ponderaciones constantes en los métodos de promedio móvil simple. Las ponderaciones dependen de un parámetro constante, conocido como parámetro de suavizamiento.
+
+Tenemos que dejar fuera de la estimación los trimestres de 2017 (3 en nuestro dataset). Mediante la funcion ets(), escogemos el mejor modelo posible. 
+
+```{r warning= FALSE, message=FALSE}
+cOmit=3
+nObs=length(zVentas)
+oVentas <- window(zVentas,start=index(zVentas[1]),end=index(zVentas[nObs-cOmit]))
+ets(oVentas)
+```
+
+### Predecimos mediante el mejor ETS
+Una vez que tenemos el mejor modelo ETS, realizamos la predicción:
+  
+```{r warning= FALSE, message=FALSE}
+## Seleccionamos automaticamente ETS
+etsfit<-ets(oVentas)
+#forecast model
+fventas.ets = forecast(etsfit)
+#Resultados
+summary(fventas.ets)
+```
+
+Y representamos gráficamente la predicción:
+```{r warning= FALSE, message=FALSE}
+plot(fventas.ets)
+lines(window(zVentas),type="o")
+matrix(c(fventas.ets$mean[1:cOmit],zVentas[(nObs-cOmit+1):nObs]),ncol=2)
+```
+Podemos crear una matriz con la comparación entre los resultados reales y nuestra predicción, para así comparar la veracidad de la predicción.
+
+### Precisión de predicción
+Podemos ver las salidas de nuestra predicción, con el fin de ver los errores de esta:
+
+```{r warning= FALSE, message=FALSE}
+etsfit<-ets(window(tsVentas,end=2016+4/4))
+fventas.ets=forecast(etsfit,h=cOmit)
+forecast:::testaccuracy(fventas.ets$mean,window(tsVentas,start=2017),test = NULL, d = NULL, D = NULL)
+```
+
+## Modelo ARIMA
+El modelo Arima es una metodología econométrica basada en modelos dinámicos que utiliza datos de series temporales. Para trabajar con modelos ARIMA es necesario tener en cuenta una serie de conceptos básicos tales como: proceso estocástico, ruido blanco, sendero aleatorio y estacionariedad. 
+
+Un proceso estocástico es una sucesión de variables aleatorias ({Yt}, t = -∞,...-1, 0, 1,..., ∞) que dependen de un parámetro, en el caso de las series temporales este parámetro es el tiempo.
+
+Un ruido blanco es una sucesión de variables aleatorias que se caracterizan por tener una esperanza constante e igual a cero, igual varianza, y además, son independientes a lo largo del tiempo (covarianza es cero).
+
+Un sendero aleatorio es un proceso estocástico que se caracteriza porque su primera diferencia es un ruido blanco.
+
+Un proceso estocástico es débilmente estacionario o estacionario en un sentido amplio, si se cumple que su media y su varianza son constantes para cualquier período de tiempo y las covarianzas entre dos variables solo dependen del lapso de tiempo que transcurre entre ellas.
+
+```{r warning= FALSE, message=FALSE}
+fit1=auto.arima(oVentas,lambda=0)
+summary(fit1)
+```
+
+El mejor modelo ARIMA es un: ARIMA(0,1,0)(0,1,0)[4]. Podemos representar un análisis de residuos:
+
+```{r warning= FALSE, message=FALSE}
+ggtsdisplay(fit1$residuals)
+```
+
+### Test Ljung–Box
+Para examinar las series de datos en busca de evidencia de cualquier correlación serial usamos la prueba estadística Ljung‐Box. Donde:
+
+- Ho: Hipótesis Nula  (ruido blanco)
+- H1: Hipótesis alternativa (no ruido blanco)
+
+```{r warning= FALSE, message=FALSE}
+Box.test(fit1$residuals,lag=4, fitdf=3, type="Lj")
+Box.test(fit1$residuals,lag=8, fitdf=3, type="Lj")
+Box.test(fit1$residuals,lag=12, fitdf=3, type="Lj")
+```
+
+Aceptamos hipótesis nula, por lo tanto son ruido blanco.
+
+### Predicción
+Hacemos predicción con nuestro modelo ARIMA:
+
+```{r warning= FALSE, message=FALSE}
+fventas.arima=forecast(fit1)
+fventas.arima
+df_new <- data.frame(value = as.vector(zVentas),
+                     time = time(zVentas))
+ggplot(df_new)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ geom_forecast(fventas.arima,alpha=0.4)+ggtitle("ARIMA: Predicción Apple")
+```
+
+Podemos comparar ambos modelos para compararlos, en nuestro caso tenemos un mejor MAPE en el ARIMA, al ser menor que el modelo ETS.
+
+```{r warning= FALSE, message=FALSE}
+summary(fit1) # ARIMA
+summary(etsfit) #ETS
+```
+
